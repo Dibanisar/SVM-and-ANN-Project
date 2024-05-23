@@ -1,0 +1,377 @@
+---
+title: "SVM and ANN"
+author: "Dibanisa Fakude"
+date: "2024-05-12"
+output: pdf_document
+---
+
+```{r}
+library(tidyverse)
+library(caTools)
+df<- read.csv("heart_failure_clinical_records_dataset.csv")
+```
+Data wrangling
+```{r}
+#Converting the factors variables
+df<-df %>% 
+  mutate(anaemia = factor(anaemia,levels= c(0,1),labels = c("No","Yes")),
+         diabetes= factor(diabetes,levels= c(0,1),labels = c("No","Yes")),
+         high_blood_pressure= factor(high_blood_pressure,levels= c(0,1),labels = c("No","Yes")),                   sex = factor(sex,levels= c(0,1),labels = c("F","M")),
+         smoking= factor(smoking,levels= c(0,1),labels = c("No","Yes")),
+         DEATH_EVENT = factor(DEATH_EVENT,levels= c(0,1),labels = c("No","Yes")))
+# Distribution of categorical variables
+cat_vars <- select_if(df, is.factor)
+table(cat_vars)
+
+# Distribution of numerical variables
+num_vars <- select_if(df, is.numeric)
+summary(num_vars)
+
+#Correlation
+correlation<-cor(num_vars)
+```
+Data exploration
+
+```{r}
+#Death event data count , checking imbalances
+ggplot(df, aes(x = DEATH_EVENT)) +
+  geom_bar(fill = "grey",color = "black") +
+  labs(title = "Distribution of DEATH_EVENT", x = "DEATH_EVENT", y = "Count")+
+  theme_bw()+                         
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+```{r}
+ggplot(df, aes(x = sex, fill = factor(sex))) +
+  geom_bar(color = "black") +
+  labs(title = "Distribution of Sex", x = "Sex", y = "Count") +
+  theme_bw() +
+  scale_fill_manual(values = c("#E69F00", "#56B4E9"), name = "Sex")+                         
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+```{r}
+# Load necessary packages
+library(ggplot2)
+
+# Create the stacked bar plot
+ggplot(df, aes(x = sex, fill = factor(DEATH_EVENT))) +
+  geom_bar(color = "black", position = "stack") +
+  labs(title = "Death Event Distribution by Sex", x = "Sex", y = "Count", fill = "Death Event") +
+  theme_bw() +
+  scale_fill_manual(values = c("#E69F00", "#56B4E9"), 
+                    labels = c("No Death Event", "Death Event"))+                         
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+```{r}
+# Plotting correlation heatmap with 
+corrplot(correlation, method = "color",
+         col = colorRampPalette(c("yellow", "red"))(10),  
+         addCoef.col = "black", number.cex = 0.6,      
+         tl.cex = 0.5)                                    
+
+
+```
+
+
+a) Randomly split the data into training and testing sets by applying an 80-20 split.
+```{r}
+#(a)
+# Split data into training and testing sets
+set.seed(123)  # For reproducibility
+split <- sample.split(df$DEATH_EVENT, SplitRatio = 0.8)
+x_train <- subset(df, split == TRUE)
+x_test <- subset(df, split == FALSE)
+
+# Perform upsampling on the training set
+oversampled_x_train <- upSample(x = x_train[ , -ncol(x_train)], 
+                                y = x_train$DEATH_EVENT, 
+                                list = FALSE)
+
+# Combine the upsampled features and the target variable into a data frame
+oversampled_x_train <- cbind(oversampled_x_train, DEATH_EVENT = oversampled_x_train$Class)
+oversampled_x_train$Class <- NULL
+
+# Verify the class distribution in the upsampled training set
+table(oversampled_x_train$DEATH_EVENT)
+```
+
+b) Build a support vector machine using a radial kernel function with cost=0.1 and
+gamma=0.1. Report the classification accuracy, recall, specificity, F1 score, and
+ROC AUC.
+
+```{r}
+#(b)
+
+library(e1071)
+library(pROC)
+set.seed(123)
+
+# Train SVM classifier
+classifier <- svm(DEATH_EVENT ~ .,
+                  data = oversampled_x_train,
+                  scale = TRUE,
+                  type = "C-classification",
+                  kernel = "radial",
+                  cost = 0.1,
+                  gamma = 0.1)
+
+# Make predictions on test dataset
+y_pred <- predict(classifier, newdata = x_test[-13])
+
+# Evaluate classifier performance with confusion matrix
+cm <- table(y_pred, x_test[, 13])
+
+
+true_positives <- cm[2, 2]
+false_positives <- cm[1, 2]
+true_negatives <- cm[1, 1]
+false_negatives <- cm[2, 1]
+
+# Calculate metrics
+accuracy <- (true_positives + true_negatives) / sum(cm)
+recall <- true_positives / (true_positives + false_negatives)
+specificity <- true_negatives / (true_negatives + false_positives)
+precision <- true_positives / (true_positives + false_positives)
+F1_score <- 2 * (precision * recall) / (precision + recall)
+roc_response <- roc(x_test[, 13], as.numeric(y_pred))
+auc_value <- auc(roc_response)
+# Print the metrics
+cat("Classification Accuracy:", accuracy, "\n")
+cat("Recall:", recall, "\n")
+cat("Specificity:", specificity, "\n")
+cat("F1 Score:", F1_score, "\n")
+cat("ROC AUC:", auc_value, "\n")
+
+```
+
+c) Repeat steps (a) and (b) 100 times and report the average of each of these metrics
+over the 100 runs. Also, provide a boxplot for each metric’s 100 values.
+```{r}
+library(tidyverse)
+library(caTools)
+library(e1071)
+library(pROC)
+
+# Initialize empty vectors to store metric values
+accuracy_vec <- vector("numeric", length = 100)
+recall_vec <- vector("numeric", length = 100)
+specificity_vec <- vector("numeric", length = 100)
+F1_score_vec <- vector("numeric", length = 100)
+auc_value_vec <- vector("numeric", length = 100)
+
+# Repeat the process 100 times
+for (i in 1:100) {
+  set.seed(123 + i)  # Set seed for reproducibility
+  
+  # Split the data
+  split <- sample.split(df$DEATH_EVENT, SplitRatio = 0.8)
+  x_train <- subset(df, split == TRUE)
+  x_test <- subset(df, split == FALSE)
+  
+  # Train SVM classifier
+  classifier <- svm(DEATH_EVENT ~ .,
+                    data = oversampled_x_train,
+                    scale = TRUE,
+                    type = "C-classification",
+                    kernel = "radial",
+                    cost = 0.1,
+                    gamma = 0.1)
+  
+  # Make predictions on test dataset
+  y_pred <- predict(classifier, newdata = x_test[-13])
+  
+  # Evaluate classifier performance with confusion matrix
+  cm <- table(y_pred, x_test[, 13])
+  
+  # Extract values from confusion matrix
+  true_positives <- cm[2, 2]
+  false_positives <- cm[1, 2]
+  true_negatives <- cm[1, 1]
+  false_negatives <- cm[2, 1]
+  
+  # Calculate metrics
+  accuracy_vec[i] <- (true_positives + true_negatives) / sum(cm)
+  recall_vec[i] <- true_positives / (true_positives + false_negatives)
+  specificity_vec[i] <- true_negatives / (true_negatives + false_positives)
+  precision <- true_positives / (true_positives + false_positives)
+  F1_score_vec[i] <- 2 * (precision * recall_vec[i]) / (precision + recall_vec[i])
+  roc_response <- roc(x_test[, 13], as.numeric(y_pred))
+  auc_value_vec[i] <- auc(roc_response)
+}
+
+# Calculate averages of metrics
+avg_accuracy <- mean(accuracy_vec)
+avg_recall <- mean(recall_vec)
+avg_specificity <- mean(specificity_vec)
+avg_F1_score <- mean(F1_score_vec)
+avg_auc_value <- mean(auc_value_vec)
+
+# Create a dataframe to store metric values
+metrics_df <- data.frame(
+  Accuracy = accuracy_vec,
+  Recall = recall_vec,
+  Specificity = specificity_vec,
+  F1_Score = F1_score_vec,
+  AUC = auc_value_vec
+)
+
+# Create boxplots for each metric
+boxplot(metrics_df, main = "Performance Metrics Distribution", col = "grey",
+        ylab = "Metric Value")
+
+# Print average values of each metric
+cat("Average Accuracy:", avg_accuracy, "\n")
+cat("Average Recall:", avg_recall, "\n")
+cat("Average Specificity:", avg_specificity, "\n")
+cat("Average F1 Score:", avg_F1_score, "\n")
+cat("Average AUC Value:", avg_auc_value, "\n")
+```
+d) Repeat steps (a), (b) and (c) with different cost and gamma parameters. You are
+expected to explore at least 3 different values for each hyperparameter. Report
+your findings using appropriate tables and/or graphs.
+```{r}
+set.seed(123)
+# Define different values for cost and gamma
+cost_values <- c(0.1, 1, 10)
+gamma_values <- c(0.1, 1, 10)
+
+# Initialize empty data frames to store results
+results <- data.frame(Cost = numeric(), Gamma = numeric(), Accuracy = numeric(),
+                      Recall = numeric(), Specificity = numeric(),
+                      F1_Score = numeric(), AUC = numeric())
+
+# Iterate over all combinations of cost and gamma values
+for (cost in cost_values) {
+  for (gamma in gamma_values) {
+    set.seed(123)  # Set seed for reproducibility
+    
+    # Train SVM classifier with current cost and gamma
+    classifier <- svm(DEATH_EVENT ~ .,
+                      data = oversampled_x_train,
+                      scale = TRUE,
+                      type = "C-classification",
+                      kernel = "radial",
+                      cost = cost,
+                      gamma = gamma)
+    
+    # Make predictions on test dataset
+    y_pred <- predict(classifier, newdata = x_test[-13])
+    
+    # Evaluate classifier performance with confusion matrix
+    cm <- table(y_pred, x_test[, 13])
+    
+    # Extract values from confusion matrix
+    true_positives <- cm[2, 2]
+    false_positives <- cm[1, 2]
+    true_negatives <- cm[1, 1]
+    false_negatives <- cm[2, 1]
+    
+    # Calculate metrics
+    accuracy <- (true_positives + true_negatives) / sum(cm)
+    recall <- true_positives / (true_positives + false_negatives)
+    specificity <- true_negatives / (true_negatives + false_positives)
+    precision <- true_positives / (true_positives + false_positives)
+    F1_score <- 2 * (precision * recall) / (precision + recall)
+    roc_response <- roc(x_test[, 13], as.numeric(y_pred))
+    auc_value <- auc(roc_response)
+    
+    # Store results in data frame
+    results <- rbind(results, data.frame(Cost = cost, Gamma = gamma,
+                                         Accuracy = accuracy, Recall = recall,
+                                         Specificity = specificity,
+                                         F1_Score = F1_score, AUC = auc_value))
+  }
+}
+
+# Print results
+print(results)
+
+
+# Reshape data for plotting
+library(reshape2)
+results_melted <- melt(results, id.vars = c("Cost", "Gamma"))
+
+# Plot heatmap for average accuracy
+ggplot(results_melted, aes(x = Cost, y = Gamma, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient(low = "red", high = "green") +
+  facet_wrap(~variable, scales = "free", ncol = 2) +
+  labs(title = "Performance Metrics Heatmap", x = "Cost", y = "Gamma")
+  labs(x = "Cost", y = "Gamma", fill = "Accuracy") +
+  theme_bw() 
+
+
+
+```
+e) Tune the cost and gamma parameters for 2 using grid search on the training
+data from (a) and report your best model parameter. Test your best model
+performance on the test data from (a).
+
+```{r}
+set.seed(123)
+library(e1071)
+
+# Define a grid of cost and gamma values to search over
+cost_grid <- c(0.01, 0.1, 1, 10, 100)
+gamma_grid <- c(0.01, 0.1, 1, 10, 100)
+
+# Initialize variables to store best parameters and performance
+best_accuracy <- 0
+best_cost <- NULL
+best_gamma <- NULL
+
+# Perform grid search
+for (cost in cost_grid) {
+  for (gamma in gamma_grid) {
+    # Train SVM classifier with current cost and gamma
+    classifier <- svm(DEATH_EVENT ~ .,
+                      data = oversampled_x_train,
+                      scale = TRUE,
+                      type = "C-classification",
+                      kernel = "radial",
+                      cost = cost,
+                      gamma = gamma)
+    
+    # Make predictions on training data
+    y_pred_train <- predict(classifier, newdata = oversampled_x_train[-13])
+    
+    # Calculate accuracy on training data
+    accuracy <- sum(y_pred_train == oversampled_x_train$DEATH_EVENT) / nrow(oversampled_x_train)
+    
+    # Update best parameters if current model is better
+    if (accuracy > best_accuracy) {
+      best_accuracy <- accuracy
+      best_cost <- cost
+      best_gamma <- gamma
+    }
+  }
+}
+
+# Train SVM classifier with best parameters
+best_classifier <- svm(DEATH_EVENT ~ .,
+                       data = oversampled_x_train,
+                       scale = TRUE,
+                       type = "C-classification",
+                       kernel = "radial",
+                       cost = best_cost,
+                       gamma = best_gamma)
+
+# Make predictions on test data
+y_pred_test <- predict(best_classifier, newdata = x_test[-13])
+
+# Calculate accuracy on test data
+test_accuracy <- sum(y_pred_test == x_test$DEATH_EVENT) / nrow(x_test)
+
+# Report best model parameters and test performance
+cat("Best model parameters:\n")
+cat("Cost:", best_cost, "\n")
+cat("Gamma:", best_gamma, "\n")
+cat("Test Accuracy:", test_accuracy, "\n")
+
+```
+
+
+
